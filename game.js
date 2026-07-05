@@ -1,7 +1,9 @@
 import { initRenderer, renderBoard } from './renderer.js';
+import { createInitialState, getValidMoves as engineGetValidMoves, canMovePiece as engineCanMovePiece, checkWinner as engineCheckWinner, getScore as engineGetScore } from './src/engine/ludoEngine.mjs';
 
 // ---------- FIXED LAP LOGIC & YARD SEPARATION ----------
-    let numPlayers = 4;
+    let gameState = createInitialState({ numPlayers: 4, humanPlayers: 1 });
+    let numPlayers = gameState.numPlayers;
     const playerColors = ["#E34234","#2E8B57","#FFD700","#1E88E5","#FF6AC2","#9B59B6","#F39C12","#1ABC9C","#D35400","#4B0082"];
     let playerNames = [];
     let humanPlayers = 1;
@@ -24,6 +26,23 @@ import { initRenderer, renderBoard } from './renderer.js';
     let validGlowTokens = [];
     
     let globalTrackCoords = [];      // 52 positions on outer ring
+
+    function syncEngineState() {
+        gameState = {
+            ...gameState,
+            numPlayers,
+            humanPlayers,
+            currentPlayer,
+            diceValue,
+            extraTurn,
+            gameWinner,
+            gameMessage,
+            tokens: tokens.map((tokenRow) => [...tokenRow]),
+            playerNames,
+            startStepPerPlayer,
+            isHuman,
+        };
+    }
     let yardPositionsRing = [];       // per player, per token: {x,y}
     let outerRadius = 0;
     let yardOuterRadius = 0;
@@ -122,22 +141,29 @@ import { initRenderer, renderBoard } from './renderer.js';
         assignStartSteps();
         buildGeometry();
         humanPlayers = Math.min(Math.max(humanPlayers, 1), numPlayers);
-        isHuman = Array(numPlayers).fill(false);
-        playerNames = [];
-        for(let i=0; i<numPlayers; i++) {
-            isHuman[i] = i < humanPlayers;
-            playerNames.push(isHuman[i] ? `P${i+1}` : `CPU${i+1-humanPlayers}`);
-        }
+        gameState = createInitialState({ numPlayers, humanPlayers });
+        numPlayers = gameState.numPlayers;
+        humanPlayers = gameState.humanPlayers;
+        isHuman = [...gameState.isHuman];
+        playerNames = [...gameState.playerNames];
+        startStepPerPlayer = [...gameState.startStepPerPlayer];
         if(reset) {
-            tokens = [];
-            for(let i=0; i<numPlayers; i++) tokens.push([-1, -1, -1, -1]); // -1 means in yard
-            currentPlayer = 0;
-            diceValue = 0;
-            extraTurn = false;
-            gameWinner = null;
+            tokens = gameState.tokens.map((tokenRow) => [...tokenRow]);
+            currentPlayer = gameState.currentPlayer;
+            diceValue = gameState.diceValue;
+            extraTurn = gameState.extraTurn;
+            gameWinner = gameState.gameWinner;
             gameMessage = `${playerNames[0]}'s turn • Roll dice to begin.`;
             validGlowTokens = [];
+        } else {
+            tokens = gameState.tokens.map((tokenRow) => [...tokenRow]);
+            currentPlayer = gameState.currentPlayer;
+            diceValue = gameState.diceValue;
+            extraTurn = gameState.extraTurn;
+            gameWinner = gameState.gameWinner;
+            gameMessage = gameState.gameMessage;
         }
+        syncEngineState();
         updateUI();
         drawBoard();
         if(isComputerPlayer(currentPlayer)) {
@@ -174,22 +200,12 @@ import { initRenderer, renderBoard } from './renderer.js';
         return SAFE_STEPS.has(stepCount % 52);
     }
     
-    function getScore(p) { return tokens[p].filter(v => v === 99).length; }
-    function checkWinner() { for(let i=0;i<numPlayers;i++) if(getScore(i)===4) return i; return null; }
+    function getScore(p) { return engineGetScore(gameState, p); }
+    function checkWinner() { const winner = engineCheckWinner(gameState); return winner >= 0 ? winner : null; }
     function isComputerPlayer(idx) { return !isHuman[idx]; }
     
     function canMovePiece(pIdx, stepVal, dice) {
-        if(stepVal === 99) return false;
-        if(stepVal === -1) return dice === 6;
-        if(stepVal >= 0 && stepVal < 52) {
-            let newStep = stepVal + dice;
-            return newStep <= 52;
-        }
-        if(stepVal >= 52 && stepVal < 58) {
-            let newStep = stepVal + dice;
-            return newStep <= 57;
-        }
-        return false;
+        return engineCanMovePiece(gameState, pIdx, stepVal, dice);
     }
     
     function applyCapture(playerIdx, newStepCount) {
@@ -221,6 +237,7 @@ import { initRenderer, renderBoard } from './renderer.js';
             tokens[pIdx][tIdx] = 0;
             playMove();
             applyCapture(pIdx, 0);
+            syncEngineState();
             return true;
         }
         if(current >= 0 && current < 52) {
@@ -232,6 +249,7 @@ import { initRenderer, renderBoard } from './renderer.js';
                 if(newStep === 52) {
                     gameMessage = `🎉 ${playerNames[pIdx]} reaches home stretch!`;
                 }
+                syncEngineState();
                 return true;
             }
         }
@@ -245,6 +263,7 @@ import { initRenderer, renderBoard } from './renderer.js';
                     gameMessage = `🎉 ${playerNames[pIdx]} finished a token!`;
                     playWin();
                 }
+                syncEngineState();
                 return true;
             }
         }
@@ -252,11 +271,7 @@ import { initRenderer, renderBoard } from './renderer.js';
     }
     
     function getValidMoves(pIdx, dice) {
-        let valid = [];
-        for(let i=0;i<4;i++) {
-            if(canMovePiece(pIdx, tokens[pIdx][i], dice)) valid.push(i);
-        }
-        return valid;
+        return engineGetValidMoves(gameState, pIdx, dice);
     }
     
     function pickComputerMove(validMoves, dice) {
@@ -304,6 +319,7 @@ import { initRenderer, renderBoard } from './renderer.js';
         if(extraTurn) {
             extraTurn = false;
             gameMessage = `${playerNames[currentPlayer]} extra turn! Roll again.`;
+            syncEngineState();
             updateUI();
             scheduleComputerRoll();
             return;
@@ -313,6 +329,7 @@ import { initRenderer, renderBoard } from './renderer.js';
         } while(getScore(currentPlayer) === 4);
         gameMessage = `${playerNames[currentPlayer]}'s turn • Roll dice`;
         validGlowTokens = [];
+        syncEngineState();
         updateUI();
         scheduleComputerRoll();
     }
@@ -327,6 +344,7 @@ import { initRenderer, renderBoard } from './renderer.js';
         if(valid.length === 0) {
             gameMessage = `${playerNames[currentPlayer]} rolled ${dice} • No moves → turn ends.`;
             extraTurn = false;
+            syncEngineState();
             nextTurn();
             diceValue = 0;
             updateDiceUI(0);
@@ -343,6 +361,7 @@ import { initRenderer, renderBoard } from './renderer.js';
                 if(winner !== null) {
                     gameWinner = winner;
                     gameMessage = `🏆🏆 ${playerNames[winner]} WINS! 🏆🏆`;
+                    syncEngineState();
                     playWin();
                     diceValue = 0;
                     updateDiceUI(0);
@@ -355,6 +374,7 @@ import { initRenderer, renderBoard } from './renderer.js';
                 updateDiceUI(0);
                 if(six) extraTurn = true;
                 else extraTurn = false;
+                syncEngineState();
                 nextTurn();
                 validGlowTokens = [];
                 drawBoard(); updateUI();
@@ -363,6 +383,7 @@ import { initRenderer, renderBoard } from './renderer.js';
         }
         gameMessage = `${playerNames[currentPlayer]} rolled ${dice}! Click a glowing token.`;
         validGlowTokens = valid;
+        syncEngineState();
         drawBoard(); updateUI();
     }
     
@@ -376,6 +397,7 @@ import { initRenderer, renderBoard } from './renderer.js';
         if(winner !== null) {
             gameWinner = winner;
             gameMessage = `🏆🏆 ${playerNames[winner]} WINS! 🏆🏆`;
+            syncEngineState();
             playWin();
             diceValue = 0;
             updateDiceUI(0);
@@ -388,6 +410,7 @@ import { initRenderer, renderBoard } from './renderer.js';
         updateDiceUI(0);
         if(six) extraTurn = true;
         else extraTurn = false;
+        syncEngineState();
         nextTurn();
         validGlowTokens = [];
         drawBoard(); updateUI();
